@@ -148,9 +148,10 @@ describe("deployment configuration", () => {
     );
   });
 
-  test("refuses to start when Intelligence is absent entirely, rather than degrading", () => {
+  test("refuses unconfigured explicitly selected Intelligence", () => {
     expect(() =>
       loadConfig({
+        OPENBOT_RUNTIME: "intelligence",
         DATABASE_URL: baseEnvironment.DATABASE_URL,
         KEY_ENCRYPTION_KEY: baseEnvironment.KEY_ENCRYPTION_KEY,
         MANAGED_AGENT_AG_UI_URL: baseEnvironment.MANAGED_AGENT_AG_UI_URL,

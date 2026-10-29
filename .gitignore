@@ -1,4 +1,5 @@
 .worktrees/
+.free-bot/
 .superpowers/
 
 # Claude Code: .claude/skills/ is shared, the rest is local state

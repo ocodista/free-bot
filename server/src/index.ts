@@ -1,8 +1,5 @@
 import type { AbstractAgent } from "@ag-ui/client";
-import {
-  CopilotKitIntelligence,
-  IntelligenceAgentRunner,
-} from "@copilotkit/runtime/v2";
+import { IntelligenceAgentRunner } from "@copilotkit/runtime/v2";
 import { COMPUTER_GUIDANCE } from "@openbot/shared/bot-prompt";
 import { workOwner } from "@openbot/shared/work-owner";
 import { createTurnRunner } from "@openbot/toolkit/run-turn";
@@ -156,9 +153,10 @@ import { retireIdentityLinks, retireOwnedAccounts } from "./identity/retire";
 import { slackCodeRedeemer } from "./identity/slack-redeem";
 import { createIdentityStore } from "./identity/store";
 import {
+  createConversationClient,
   createIntelligenceClient,
-  observeIntelligenceAuthentication,
 } from "./intelligence-client";
+import { reportIntelligenceEntitlement } from "./intelligence-entitlement-check";
 import {
   createLearningAutoAssign,
   probeLearningContainer,
@@ -173,12 +171,13 @@ import {
 } from "./learning/ensure-container";
 import { clearLearningRevisionFallback } from "./learning/runtime";
 import { createLearningSettingsStore } from "./learning/settings";
+import { getLocalRuntime } from "./local-runtime";
 import { createMemoryDefaults } from "./memory/defaults";
 import { createMemoryIngestion } from "./memory/ingestion";
 import { createIntelligenceMemory } from "./memory/intelligence";
 import { createMemoryStore } from "./memory/store";
-import { reportModelAvailability } from "./model-availability-check";
 import { memoryTools } from "./memory/tools";
+import { reportModelAvailability } from "./model-availability-check";
 import { createSignInNotifier, createSignInResumer } from "./passwords/resume";
 import { createSignInService } from "./passwords/service";
 import { createPasswordStore } from "./passwords/store";
@@ -238,7 +237,6 @@ import { createRoutineRunner } from "./routines/runner";
 import { createRoutineStore } from "./routines/store";
 import { createIntentRouter } from "./routing/classify";
 import { createModelCompleter } from "./routing/model";
-import { reportIntelligenceEntitlement } from "./intelligence-entitlement-check";
 import { createSelfHostBanner } from "./self-host-banner";
 import { createTeamBots } from "./team-bots/team-bots";
 import {
@@ -314,6 +312,9 @@ const identifyActor: IdentifyActor = async (request) => {
 };
 
 const config = loadConfig();
+if (config.runtime.mode === "local") {
+  process.env.COPILOTKIT_TELEMETRY_DISABLED = "true";
+}
 // The environment seeds local policy once. The SDK fallback must not reapply an old revision
 // after an administrator clears a pin to follow the latest published Skills.
 clearLearningRevisionFallback();
@@ -327,16 +328,18 @@ const learningSettingsStore = createLearningSettingsStore(
   database,
   config.learning,
 );
-// Its own client, like the self-host banner's: the constructor opens nothing.
-const learningProbeIntelligence = createIntelligenceClient(
-  config.runtime.intelligence,
-);
+const learningProbeIntelligence = createConversationClient(config.runtime);
+const configuredIntelligence =
+  config.runtime.mode === "intelligence"
+    ? config.runtime.intelligence
+    : undefined;
 /*
  * Who can create the `openbot` container here: never the runtime key. A service token the operator
  * configured (local evaluation installs), or a CopilotKit CLI login on this machine, which is what a
  * laptop running `bun run start` has. Neither, and the log and Admin say exactly what to run instead.
  */
 const learningApiOrigin = (() => {
+  if (config.runtime.mode === "local") return undefined;
   try {
     return intelligenceApiOrigin(config.runtime.intelligence.apiUrl);
   } catch {
@@ -354,7 +357,7 @@ const learningAutoAssign = createLearningAutoAssign({
   ...(learningApiOrigin
     ? { instructions: learningSetupInstructions(learningApiOrigin) }
     : {}),
-  ...(learningCanCreate && learningApiOrigin
+  ...(learningCanCreate && learningApiOrigin && configuredIntelligence
     ? {
         create: () =>
           ensureLearningContainer({
@@ -363,8 +366,8 @@ const learningAutoAssign = createLearningAutoAssign({
             nonInteractive: true,
             key: keyIntelligence(
               learningApiOrigin,
-              config.runtime.intelligence.apiKey,
-              config.runtime.intelligence.gatewayWsUrl,
+              configuredIntelligence.apiKey,
+              configuredIntelligence.gatewayWsUrl,
             ),
             cliLogin: cliLoginPresent(),
             ...(config.learningSetup
@@ -661,28 +664,7 @@ const chooseSkills = createModelCompleter({
     }),
 });
 
-/*
- * The pair a headless turn is driven through, built ONCE.
- *
- * Not the runtime's own pair: `mountCopilotRuntime` keeps its client and its runner inside
- * `CopilotRuntime` and hands neither back, and reaching into that object would be a worse seam than
- * building our own from the same three settings. Built from `config.runtime.intelligence`, which is
- * required and not optional — `RuntimeCapabilities` has exactly one mode and every Intelligence field
- * with it (`config.ts:10-22`), and `loadConfig` refuses to boot without them — so there is no
- * not-in-Intelligence-mode branch to write here. If a second mode is ever added, THIS is the line that
- * has to grow a guard, and the routine runner must then be left off `createApp` entirely.
- *
- * One runner for the process, reused across firings: it opens a socket per run and holds no idle
- * connection, but its `threads` map is per instance, and a runner per turn would fragment the
- * already-running check that keeps two turns off one thread. See `toolkit/run-turn.ts`.
- */
-const routineIntelligence = observeIntelligenceAuthentication(
-  new CopilotKitIntelligence({
-    apiUrl: config.runtime.intelligence.apiUrl,
-    wsUrl: config.runtime.intelligence.gatewayWsUrl,
-    apiKey: config.runtime.intelligence.apiKey,
-  }),
-);
+const routineIntelligence = createConversationClient(config.runtime);
 const approvalComputerTools = async (
   ownerUserId: string,
   agentId: string,
@@ -1159,9 +1141,13 @@ const hostAccessBroker = createHostAccessBroker(Date.now, {
 // tables when it is not; see memory/store.ts. Its own client, like the thread reader's: the
 // constructor opens nothing.
 const personalMemoryStore = createMemoryStore(database, {
-  intelligence: createIntelligenceMemory({
-    client: createIntelligenceClient(config.runtime.intelligence),
-  }),
+  ...(config.runtime.mode === "intelligence"
+    ? {
+        intelligence: createIntelligenceMemory({
+          client: createIntelligenceClient(config.runtime.intelligence),
+        }),
+      }
+    : {}),
 });
 const demonstrationStore = createDemonstrationStore(database);
 const demonstrationRecorder = createDemonstrationRecorder({
@@ -1554,10 +1540,13 @@ const buildAgentFor = async ({
   }
   return agent;
 };
-const routineAgentRunner = new IntelligenceAgentRunner({
-  url: routineIntelligence.ɵgetRunnerWsUrl(),
-  authToken: routineIntelligence.ɵgetRunnerAuthToken(),
-});
+const routineAgentRunner =
+  config.runtime.mode === "local"
+    ? getLocalRuntime(config.runtime.path).runner
+    : new IntelligenceAgentRunner({
+        url: routineIntelligence.ɵgetRunnerWsUrl(),
+        authToken: routineIntelligence.ɵgetRunnerAuthToken(),
+      });
 
 const routineRunner = createRoutineRunner({
   routineStore,
@@ -2261,17 +2250,13 @@ guardHostAccess(
 );
 auditRoutineStore(routineStore, bootAuditStore);
 
-// Asked only whether this deployment pays for Intelligence, for the self-host banner. Its own client
-// rather than the runtime's, the same as the thread reader: the constructor opens nothing.
-const selfHostBannerIntelligence = createIntelligenceClient(
-  config.runtime.intelligence,
-);
+const selfHostBannerIntelligence = createConversationClient(config.runtime);
 
-// Said once, at boot, whether Intelligence will let this deployment use what it is licensed for. A
-// self-hosted Intelligence without a licence refuses memory quietly; this is the line that says why.
-void reportIntelligenceEntitlement({
-  entitlements: () => selfHostBannerIntelligence.getRuntimeEntitlements(),
-});
+if (config.runtime.mode === "intelligence") {
+  void reportIntelligenceEntitlement({
+    entitlements: () => selfHostBannerIntelligence.getRuntimeEntitlements(),
+  });
+}
 
 const identityGithubCallback =
   config.githubApp && config.publicUrl
@@ -2525,4 +2510,4 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   });
 }
 
-console.info(`OpenBot server listening on http://127.0.0.1:${port}`);
+console.info(`Free-bot server listening on http://127.0.0.1:${port}`);

@@ -1,9 +1,10 @@
 import { CopilotKitIntelligence } from "@copilotkit/runtime/v2";
-import type { IntelligenceSettings } from "./config";
+import type { IntelligenceSettings, RuntimeCapabilities } from "./config";
 import {
   clearDesktopConnectionFailure,
   recordDesktopConnectionFailure,
 } from "./desktop-connection-failure";
+import { getLocalRuntime } from "./local-runtime";
 
 /** Observe the SDK's typed HTTP errors before runtime handlers turn them into generic 500s. */
 export function observeIntelligenceAuthentication<
@@ -79,4 +80,12 @@ export function createIntelligenceClient(
       apiKey: settings.apiKey,
     }),
   );
+}
+
+export function createConversationClient(
+  runtime: RuntimeCapabilities,
+): CopilotKitIntelligence {
+  return runtime.mode === "local"
+    ? getLocalRuntime(runtime.path).client
+    : createIntelligenceClient(runtime.intelligence);
 }

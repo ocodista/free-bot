@@ -402,7 +402,7 @@ describe("tenant YAML validation", () => {
       fileURLToPath(new URL("../../examples/fintech", import.meta.url)),
     );
 
-    expect(tenantPackage.tenantId).toBe("openbot");
+    expect(tenantPackage.tenantId).toBe("free-bot");
     expect(tenantPackage.stylesheet).toBeNull();
     expect(tenantPackage.themeCss).toBe("");
     expect(tenantPackage.checksum).toMatch(/^[a-f0-9]{64}$/);

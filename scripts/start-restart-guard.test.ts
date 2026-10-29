@@ -20,6 +20,7 @@ async function writeExecutable(path: string, contents: string) {
  * all.
  */
 type Run = {
+  runtimeInfo?: { licenseStatus?: string; mode: string };
   shell?: "bash" | "sh";
   omitFromEnv?: readonly string[];
   settings?: Record<string, string>;
@@ -30,6 +31,7 @@ type Run = {
 async function runStartWithStaleServerProbe(
   status: 401 | 404,
   {
+    runtimeInfo = { licenseStatus: "valid", mode: "test" },
     shell = "bash",
     omitFromEnv = [],
     settings = {},
@@ -105,11 +107,11 @@ if [[ "$args" == *"/internal/routines/run"* ]]; then
   exit 0
 fi
 if [[ "$args" == *"/api/copilotkit/info"* ]]; then
-  printf '{"licenseStatus":"valid","mode":"test","agents":{"analyst":{}}}'
+  printf '%s' '${JSON.stringify({ ...runtimeInfo, agents: { analyst: {} } })}'
   exit 0
 fi
 if [[ "$args" == *"http://localhost:3010/"* ]]; then
-  printf '<title>OpenBot</title>'
+  printf '<title>Free-bot</title>'
   exit 0
 fi
 exit 0
@@ -347,6 +349,23 @@ describe("start.sh one computer each", () => {
 });
 
 describe("start.sh Learning container check", () => {
+  test("local mode never runs hosted setup even with an old project key", async () => {
+    const result = await runStartWithStaleServerProbe(401, {
+      settings: { OPENBOT_RUNTIME: "local", INTELLIGENCE_API_KEY: "old-key" },
+      runtimeInfo: { mode: "sse" },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain("LEARNING-CHECK");
+    expect(result.stdout).toContain("local runtime");
+  });
+
+  test("Intelligence still refuses a missing entitlement", async () => {
+    const result = await runStartWithStaleServerProbe(401, {
+      runtimeInfo: { mode: "intelligence", licenseStatus: "none" },
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain("licence is 'none'");
+  });
   /**
    * The server assigns `openbot` once it exists, but its runtime key cannot create it. start.sh asks
    * the setup helper, without a browser or a prompt, to make sure it exists, and relays its last line.

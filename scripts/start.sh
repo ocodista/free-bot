@@ -153,17 +153,26 @@ info()  { printf '\033[2m%s\033[0m\n' "$1"; }
 #
 # So each surface is asked for something only it can produce.
 identifies_as_openbot() {
-  local port="$1" name="$2"
+  local port="$1" name="$2" payload
   case "$name" in
     # A field of this server's own payload. A stray 200 does not carry it.
     server)
-      curl -fsS --max-time 3 "http://localhost:$port/api/copilotkit/info" 2>/dev/null \
-        | grep -q '"licenseStatus"'
+      payload="$(curl -fsS --max-time 3 "http://localhost:$port/api/copilotkit/info" 2>/dev/null)" || return 1
+      bun run - "$payload" <<'JS'
+try {
+  const info = JSON.parse(process.argv[2]);
+  const agents = info.agents;
+  process.exit(agents && typeof agents === "object" && !Array.isArray(agents)
+    && (info.mode === "sse" || typeof info.licenseStatus === "string") ? 0 : 1);
+} catch {
+  process.exit(1);
+}
+JS
       ;;
     # The app is static HTML with nothing to interrogate, so its title is the identity available.
     app)
       curl -fsS --max-time 3 "http://localhost:$port/" 2>/dev/null \
-        | grep -qi '<title>[^<]*OpenBot'
+        | grep -qi '<title>[^<]*Free-bot'
       ;;
     # Compose services on dedicated loopback ports, answering a route named for this stack.
     *)
@@ -299,7 +308,8 @@ green "  managed coworker endpoint: $MANAGED_AGENT_AG_UI_URL"
 # happens, and with nothing that can create it the line says exactly what to run.
 LEARNING_CONTAINER="$(setting CPK_INTELLIGENCE_LEARNING_CONTAINER_ID "")"
 LEARNING_AUTO_ASSIGN="$(setting OPENBOT_LEARNING_AUTO_ASSIGN true)"
-if [ -z "$LEARNING_CONTAINER" ] && [ "$LEARNING_AUTO_ASSIGN" != "false" ] \
+RUNTIME_MODE="$(setting OPENBOT_RUNTIME "")"
+if [ "$RUNTIME_MODE" != "local" ] && [ -z "$LEARNING_CONTAINER" ] && [ "$LEARNING_AUTO_ASSIGN" != "false" ] \
    && [ "$LEARNING_AUTO_ASSIGN" != "0" ] && [ -n "$(setting INTELLIGENCE_API_KEY "")" ]; then
   LEARNING_LINE="$(bun scripts/setup-learning.ts --non-interactive 2>>"$LOGS/learning-setup.log" | tail -1 || true)"
   info "  ${LEARNING_LINE:-Automatic Learning: the container check did not run. Log: $LOGS/learning-setup.log}"
@@ -363,6 +373,8 @@ if ! identifies_as_openbot "$SERVER_PORT" server; then
       bun --env-file=../.env src/production-entry.ts >"$LOGS/server.log" 2>&1 &)
   else
     (cd server && PORT="$SERVER_PORT" \
+      AGENT_COMPUTER_URL="http://127.0.0.1:$COMPUTER_PORT" \
+      COMPUTER_TOKEN="$COMPUTER_TOKEN" \
       WORKER_SHARED_SECRET="$WORKER_SHARED_SECRET" \
       bun --env-file=../.env src/production-entry.ts >"$LOGS/server.log" 2>&1 &)
   fi
@@ -389,7 +401,7 @@ if ! running "bun worker/src/index.ts"; then
   WORKER_DATABASE_URL="$(setting DATABASE_URL postgres://openbot:openbot@localhost:5432/openbot)"
   (cd "$ROOT" && \
     DATABASE_URL="$WORKER_DATABASE_URL" \
-    SERVER_INTERNAL_URL="http://localhost:$SERVER_PORT" \
+    SERVER_INTERNAL_URL="http://127.0.0.1:$SERVER_PORT" \
     WORKER_SHARED_SECRET="$WORKER_SHARED_SECRET" \
     bun worker/src/index.ts >"$LOGS/worker.log" 2>&1 &)
   info "  worker: started (routine sweep loop)"
@@ -411,7 +423,7 @@ bun run - "$INFO" <<'JS'
 const info = JSON.parse(process.argv[2]);
 const status = info.licenseStatus;
 const agents = Object.keys(info.agents ?? {});
-if (status !== "valid") {
+if (info.mode !== "sse" && status !== "valid") {
   console.log(`\x1b[31m  licence is '${status}', not 'valid'.\x1b[0m`);
   console.log("\x1b[31m  Check INTELLIGENCE_API_KEY: npx copilotkit@latest login && npx copilotkit@latest project select\x1b[0m");
   console.log("\x1b[31m  See README.md for Intelligence setup.\x1b[0m");
@@ -421,7 +433,7 @@ if (agents.length === 0) {
   console.log("\x1b[31m  No Bots registered.\x1b[0m");
   process.exit(1);
 }
-console.log(`\x1b[32m  licence valid · mode ${info.mode} · Bots: ${agents.join(", ")}\x1b[0m`);
+console.log(`\x1b[32m  ${info.mode === "sse" ? "local runtime" : "licence valid"} · mode ${info.mode} · Bots: ${agents.join(", ")}\x1b[0m`);
 JS
 
 info "4/4  App"

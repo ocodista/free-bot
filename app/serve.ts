@@ -194,9 +194,8 @@ function prepareWebSocketBridge(upstream: BunWebSocket, signal: AbortSignal) {
 if (import.meta.main) {
   Bun.serve<WebSocketBridge>({
     port: PORT,
-    // Both loopbacks, which is what `::` gets you: a dual-stack socket answers on 127.0.0.1 and
-    // ::1 alike. Bound to one, whoever is told the URL has no way to know which they were given.
-    hostname: "::",
+    hostname:
+      process.env.OPENBOT_RUNTIME === "intelligence" ? "::" : "127.0.0.1",
     // `ws: true` on the old proxy was required for the live screen, so the upgrade is forwarded
     // rather than answered with the app's HTML, which failed with an opaque socket error.
     websocket: {

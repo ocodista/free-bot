@@ -14,6 +14,7 @@ import {
 async function probeServingPorts(env: {
   APP_PORT?: string;
   SERVER_PORT?: string;
+  OPENBOT_RUNTIME?: string;
 }) {
   const directory = await mkdtemp(join(tmpdir(), "openbot-serve-ports-"));
   const preload = join(directory, "probe.mjs");
@@ -24,6 +25,7 @@ async function probeServingPorts(env: {
       preload,
       `globalThis.fetch = async (target) => Response.json({ target });
 Bun.serve = (options) => {
+  console.log("LISTENER_HOST:" + options.hostname);
   Promise.resolve(options.fetch(new Request("http://localhost/api/port-check"), {}))
     .then((response) => response.json())
     .then(({ target }) => {
@@ -65,6 +67,17 @@ Bun.serve = (options) => {
 }
 
 describe("serving port configuration", () => {
+  test("local production app binds only to loopback", async () => {
+    const result = await probeServingPorts({ OPENBOT_RUNTIME: "local" });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("LISTENER_HOST:127.0.0.1");
+  });
+
+  test("explicit authenticated Intelligence keeps its network listener", async () => {
+    const result = await probeServingPorts({ OPENBOT_RUNTIME: "intelligence" });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("LISTENER_HOST:::");
+  });
   test.each([undefined, "", " \t "])(
     "absent or blank ports use the app and server defaults: %j",
     async (raw) => {

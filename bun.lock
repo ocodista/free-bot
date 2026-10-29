@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "openbot",
+      "name": "free-bot",
       "dependencies": {
         "playwright-core": "1.62.1",
       },

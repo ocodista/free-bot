@@ -9,6 +9,8 @@ import { streamPathBotId } from "./computer/stream-path";
 import type { DeploymentConfig } from "./config";
 import type { DemonstrationRecorder } from "./demonstrations/recording";
 import type { DemonstrationStore } from "./demonstrations/store";
+import { localRequestRefusal } from "./local-access";
+import { startLocalCallbackServer } from "./local-callback-server";
 
 /**
  * The server's front door: one Bun server that hands ordinary requests to the Hono app, proxies the
@@ -62,6 +64,11 @@ export function startHttpServer(deps: {
     demonstrationRecorder,
     app,
   } = deps;
+  if (config.runtime.mode === "local" && config.runtime.callbackPort) {
+    startLocalCallbackServer(config.runtime.callbackPort, (request) =>
+      app.fetch(request, { server: undefined }),
+    );
+  }
 
   /**
    * The live screen, proxied.
@@ -90,7 +97,10 @@ export function startHttpServer(deps: {
 
   serve<SocketData>({
     port,
+    ...(config.runtime.mode === "local" ? { hostname: "127.0.0.1" } : {}),
     async fetch(request, server) {
+      const refusal = localRequestRefusal(request, config);
+      if (refusal) return refusal;
       const url = new URL(request.url);
       if (url.pathname === "/api/audio/transcriptions") {
         server.timeout(request, DICTATION_HTTP_IDLE_SECONDS);

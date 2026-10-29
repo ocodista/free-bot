@@ -1,5 +1,5 @@
 {
-  "name": "openbot",
+  "name": "free-bot",
   "version": "0.2.0",
   "license": "MIT",
   "private": true,
@@ -12,6 +12,9 @@
     "toolkit"
   ],
   "scripts": {
+    "start": "bash scripts/start.sh",
+    "test:local": "bun test server/tests/local-runtime.test.ts server/tests/local-config.test.ts server/tests/local-access.test.ts server/tests/local-callback.test.ts",
+    "test:local-e2e": "bun scripts/free-bot-e2e.ts",
     "build": "bun run generate:app-config && bun run --filter '*' build",
     "dev": "bun run generate:app-config && bun run --filter app --filter server --parallel dev",
     "generate:app-config": "bun --env-file=.env scripts/generate-app-config.ts",

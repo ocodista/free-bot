@@ -1,8 +1,4 @@
-/**
- * What the runtime can do. There is exactly one answer because CopilotKit Intelligence is required
- * for durable threads and memory. Configuration the product cannot function without belongs at the
- * boot boundary.
- */
+import { resolve } from "node:path";
 import {
   isLearningContainerId,
   type LearningTarget,
@@ -19,11 +15,13 @@ import {
 import { type VoiceConfig, voiceConfig } from "./voice/config";
 import { type WebBotAuth, webBotAuthFromEnv } from "./web-bot-auth";
 
-export type RuntimeCapabilities = {
-  mode: "intelligence";
-  durableHistory: true;
-  intelligence: IntelligenceSettings;
-};
+export type RuntimeCapabilities =
+  | { mode: "local"; durableHistory: true; path: string; callbackPort?: number }
+  | {
+      mode: "intelligence";
+      durableHistory: true;
+      intelligence: IntelligenceSettings;
+    };
 
 /**
  * The Intelligence contract. Three values are required; see runtimeCapabilities.
@@ -932,20 +930,42 @@ function oktaAuth(
   return { ...client, issuer };
 }
 
-/**
- * Resolve the Intelligence contract, or refuse to start.
- *
- * The three addressing values are required together. A partial set is the more dangerous shape than
- * none at all: it means somebody intended to configure Intelligence and got it wrong, so failing on
- * the partial set alone (as this did) let a completely unconfigured deployment through as if that
- * were a choice.
- *
- * COPILOTKIT_LICENSE_TOKEN IS NO LONGER ONE OF THEM. Managed Intelligence issues a single project
- * key and derives entitlement from it, and requiring a second credential here sent people hunting
- * for a token the platform had stopped handing out. It is still read and still forwarded when a
- * deployment sets one, which is what a self-hosted Intelligence with its own licence needs.
- */
 function runtimeCapabilities(environment: Environment): RuntimeCapabilities {
+  const selected = optional(environment, "OPENBOT_RUNTIME");
+  if (selected && selected !== "local" && selected !== "intelligence") {
+    throw new Error("OPENBOT_RUNTIME must be local or intelligence.");
+  }
+  const hasIntelligence = [
+    "INTELLIGENCE_API_URL",
+    "INTELLIGENCE_GATEWAY_WS_URL",
+    "INTELLIGENCE_API_KEY",
+  ].some((name) => optional(environment, name));
+  if (selected === "local" || (!selected && !hasIntelligence)) {
+    const callback = optional(environment, "FREE_BOT_CALLBACK_PORT");
+    const callbackPort = callback ? Number(callback) : undefined;
+    if (
+      callbackPort !== undefined &&
+      (!/^\d+$/.test(callback ?? "") ||
+        !Number.isInteger(callbackPort) ||
+        callbackPort < 1 ||
+        callbackPort > 65535 ||
+        callbackPort === serverPort(environment))
+    ) {
+      throw new Error(
+        "FREE_BOT_CALLBACK_PORT must be a distinct port from 1 to 65535.",
+      );
+    }
+    return {
+      mode: "local",
+      durableHistory: true,
+      path: resolve(
+        optional(environment, "FREE_BOT_DATA_DIR") ??
+          resolve(import.meta.dir, "../../.free-bot"),
+        "conversations.sqlite",
+      ),
+      ...(callbackPort === undefined ? {} : { callbackPort }),
+    };
+  }
   const settings = {
     apiUrl: url(environment, "INTELLIGENCE_API_URL"),
     gatewayWsUrl: url(environment, "INTELLIGENCE_GATEWAY_WS_URL"),
@@ -1340,6 +1360,35 @@ export function loadConfig(
     publicUrl,
     keyEncryptionKey: deploymentKey,
   });
+  const runtime = runtimeCapabilities(environment);
+  const local = runtime.mode === "local";
+  const singleUser =
+    !organizationAuthUrl &&
+    singleUserAllowed(
+      local && !optional(environment, "OPENBOT_SINGLE_USER")
+        ? { ...environment, OPENBOT_SINGLE_USER: "true" }
+        : environment,
+      configuredAuthProviders(auth).length > 0,
+    );
+  if (local) {
+    if (!singleUser || auth || organizationAuthUrl) {
+      throw new Error(
+        "The local runtime requires single-user access without an authentication provider or organization authority. Use OPENBOT_RUNTIME=intelligence for multiple users.",
+      );
+    }
+    for (const address of [
+      publicUrl,
+      optional(environment, "OPENBOT_APP_URL"),
+      ...commaSeparated(environment, "TRUSTED_ORIGINS"),
+    ]) {
+      if (
+        address &&
+        !["localhost", "127.0.0.1", "[::1]"].includes(new URL(address).hostname)
+      ) {
+        throw new Error("The local runtime requires loopback URLs.");
+      }
+    }
+  }
 
   return {
     port: serverPort(environment),
@@ -1362,10 +1411,10 @@ export function loadConfig(
     )?.replace(/\/+$/, ""),
     tenantPackageDirectory:
       optional(environment, "TENANT_PACKAGE_DIR") ?? "../examples/fintech",
-    runtime: runtimeCapabilities(environment),
-    learning: learningDefault(environment),
-    learningAutoAssign: learningAutoAssignEnabled(environment),
-    ...learningSetupCredential(environment),
+    runtime,
+    learning: local ? undefined : learningDefault(environment),
+    learningAutoAssign: !local && learningAutoAssignEnabled(environment),
+    ...(local ? {} : learningSetupCredential(environment)),
     memoryDefaults: {
       sources: switchedOn(environment, "OPENBOT_MEMORY_SOURCE_DEFAULTS"),
       research: switchedOn(environment, "OPENBOT_PROACTIVE_DEFAULTS"),
@@ -1375,17 +1424,10 @@ export function loadConfig(
     oauth: { google },
     auth,
     ...(organizationAuthUrl ? { organizationAuthUrl } : {}),
-    /*
-     * The authority short-circuits this, and that ordering is load-bearing: a white-label
-     * deployment naming an external authority lets it win, and `singleUserAllowed` is never
-     * reached and so cannot refuse a combination that already resolves.
-     */
-    singleUser:
-      !organizationAuthUrl &&
-      singleUserAllowed(environment, configuredAuthProviders(auth).length > 0),
+    singleUser,
     accessibility: accessibilityEnabled(environment),
     generativeUi: generativeUiEnabled(environment),
-    selfHostBanner: selfHostBannerEnabled(environment),
+    selfHostBanner: !local && selfHostBannerEnabled(environment),
     ...(optional(environment, "APP_DIST_DIR")
       ? { appDistDir: optional(environment, "APP_DIST_DIR") as string }
       : {}),

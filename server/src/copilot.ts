@@ -55,6 +55,7 @@ import {
   type LearningRuntime,
 } from "./learning/runtime";
 import type { LearningSettingsStore } from "./learning/settings";
+import { getLocalRuntime } from "./local-runtime";
 import {
   type LoadPersonalMemory,
   PersonalMemoryMiddleware,
@@ -67,20 +68,6 @@ import {
 } from "./plugins/selection";
 import { grantedToolGuidance } from "./plugins/tools";
 import { UNTRUSTED_GUIDANCE } from "./untrusted-content";
-
-/**
- * The CopilotKit runtime, always in Intelligence mode.
- *
- * Package-declared built-in Bots run as CopilotKit `BuiltInAgent` instances. External Bots are
- * reached over AG-UI as `HttpAgent` instances, so anything that speaks the protocol remains a Bot
- * with no framework adapter here: LangGraph, Pydantic-AI, CrewAI, Mastra, ADK, or a hand-written
- * server.
- *
- * There is no SSE branch. Intelligence is a requirement of the product, not a tier: it owns
- * durable threads, memory and learning, and a deployment without it silently forgets every
- * conversation. config.ts refuses to boot without the full contract, so by the time this runs the
- * settings are present and this file has one mode.
- */
 
 /** Resolve the signed-in person for a request. Threads and memory are scoped to whoever this returns. */
 export type IdentifyUser = (
@@ -1703,7 +1690,10 @@ export function mountCopilotRuntime(
     learningSettings?: LearningSettingsStore;
   } = {},
 ) {
-  const { intelligence } = config.runtime;
+  const local =
+    config.runtime.mode === "local"
+      ? getLocalRuntime(config.runtime.path)
+      : undefined;
   const { basePath = "/api/copilotkit", onRunBusy, learningSettings } = options;
 
   /**
@@ -1744,47 +1734,47 @@ export function mountCopilotRuntime(
    * history a person's run would read rather than a second view of it that could disagree.
    */
   const intelligenceClient: CopilotKitIntelligence =
-    observeIntelligenceAuthentication(
-      new IntelligenceKnowingANewThread({
-        apiUrl: intelligence.apiUrl,
-        wsUrl: intelligence.gatewayWsUrl,
-        apiKey: intelligence.apiKey,
-        getLearningContainerId: async ({
-          agentId,
-          input,
-          user,
-        }): Promise<string | undefined> => {
-          if (!user)
-            throw new Error(
-              "Learning Thread assignment requires a verified user.",
-            );
-          return learning?.containerForThread({
-            agentId,
-            threadId: input.threadId,
-            userId: user.id,
-          });
-        },
-      }),
-    );
+    config.runtime.mode === "local"
+      ? getLocalRuntime(config.runtime.path).client
+      : observeIntelligenceAuthentication(
+          new IntelligenceKnowingANewThread({
+            apiUrl: config.runtime.intelligence.apiUrl,
+            wsUrl: config.runtime.intelligence.gatewayWsUrl,
+            apiKey: config.runtime.intelligence.apiKey,
+            getLearningContainerId: async ({
+              agentId,
+              input,
+              user,
+            }): Promise<string | undefined> => {
+              if (!user)
+                throw new Error(
+                  "Learning Thread assignment requires a verified user.",
+                );
+              return learning?.containerForThread({
+                agentId,
+                threadId: input.threadId,
+                userId: user.id,
+              });
+            },
+          }),
+        );
 
-  const learning: LearningRuntime | undefined = learningSettings
-    ? createLearningRuntime({
-        store: learningSettings,
-        client: intelligenceClient,
-      })
-    : undefined;
+  const learning: LearningRuntime | undefined =
+    learningSettings && !local
+      ? createLearningRuntime({
+          store: learningSettings,
+          client: intelligenceClient,
+        })
+      : undefined;
 
   const runtime = new CopilotRuntime({
-    // `mode` is inferred from the presence of `intelligence`; passing it is a type error.
-    //
-    // identifyUser is NOT optional in practice. Threads and memory are scoped to the user it
-    // returns, so omitting it puts every person in the deployment in the same thread space and one
-    // person's conversations become another's.
-    identifyUser,
-    // The subclass, not the base: a thread nobody has run yet reads as empty rather than as a 500.
-    // See IntelligenceKnowingANewThread.
-    intelligence: intelligenceClient,
-    licenseToken: intelligence.licenseToken,
+    ...(config.runtime.mode === "local"
+      ? { runner: getLocalRuntime(config.runtime.path).runner }
+      : {
+          identifyUser,
+          intelligence: intelligenceClient,
+          licenseToken: config.runtime.intelligence.licenseToken,
+        }),
     // Carried on the events the runtime already sends, so OpenBot's traffic is separable from any
     // other deployment's. Adds no events of its own.
     telemetryProperties: {
@@ -1819,19 +1809,7 @@ export function mountCopilotRuntime(
   return {
     handler: createCopilotHonoHandler({ runtime, basePath }),
     learning,
-    /**
-     * How to reach the platform's runner, exactly as the runtime reaches it.
-     *
-     * TAKEN FROM THE CLIENT, NOT FROM CONFIGURATION, and this is the whole of a bug that only a real
-     * gateway could show. Built from `gatewayWsUrl` and the deployment's API key, every join was
-     * refused with `active_lock_mismatch`: a thread's active run is a lock the platform issues, and
-     * the token that holds it is not the API key. The runtime asks the client for both, so anything
-     * else driving a run has to ask the same client the same way.
-     */
-    runnerConnection: () => ({
-      url: intelligenceClient.ɵgetRunnerWsUrl(),
-      authToken: intelligenceClient.ɵgetRunnerAuthToken(),
-    }),
+    runner: runtime.runner,
     threadLock: createIntelligenceThreadLock({
       client: intelligenceClient,
       learning,
@@ -1845,6 +1823,7 @@ export function mountCopilotRuntime(
      * than a second view of it that could disagree.
      */
     history: async (input: { threadId: string; actorId: string }) => {
+      if (local) return local.runner.getThreadMessages(input.threadId);
       /*
        * The platform's own message type rather than AG-UI's, inferred rather than named: the two are
        * compatible where it matters and naming the wrong one here would mean converting a history

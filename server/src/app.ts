@@ -1,8 +1,8 @@
+import { MAX_IMAGE_BYTES } from "@openbot/shared/attachments";
 import type { Hono as HonoApp, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { serveStatic } from "hono/bun";
-import { MAX_IMAGE_BYTES } from "@openbot/shared/attachments";
 import { enterpriseControls } from "./admin/controls";
 import { createEnterpriseGate } from "./admin/gate";
 import { createEnterpriseAdminRoutes } from "./admin/routes";
@@ -25,10 +25,10 @@ import type { ApprovalService } from "./approvals/service";
 import {
   type AuditEventType,
   type AuditInitiator,
-  auditEventsToCsv,
   AuditQueryError,
   type AuditReader,
   type AuditStore,
+  auditEventsToCsv,
   auditQueryFromUrl,
   DEPLOYMENT_INITIATOR,
   readAuditExportRows,
@@ -84,11 +84,12 @@ import type { HostAccessBroker } from "./host-access/broker";
 import { createHostAccessRoutes } from "./host-access/routes";
 import { identityRoutes } from "./identity/routes";
 import type { IdentityStore } from "./identity/store";
-import { createIntelligenceClient } from "./intelligence-client";
+import { createConversationClient } from "./intelligence-client";
 import {
   createLearningRoutes,
   type LearningAdminDependencies,
 } from "./learning/routes";
+import { localRequestRefusal } from "./local-access";
 import type { MemoryIngestion } from "./memory/ingestion";
 import { createMemoryRoutes } from "./memory/routes";
 import type { MemoryStore } from "./memory/store";
@@ -449,6 +450,11 @@ export function createApp(
   identityGithubCallback?: Hono<{ Variables: AppVariables }>,
 ) {
   const app = new Hono<{ Variables: AppVariables }>();
+  app.use("*", async (context, next) => {
+    const refusal = localRequestRefusal(context.req.raw, config);
+    if (refusal) return refusal;
+    return next();
+  });
   mountDesktopConnectionFailure(app, desktopHostToken);
   mountProviderOAuthProxy(app, modelProviderProxy);
 
@@ -1903,14 +1909,7 @@ export function createApp(
       createThreadRoutes(
         threadIdentity,
         requireUser,
-        // config.ts refuses to boot without the full Intelligence contract (see copilot.ts's
-        // header comment), so `config.runtime.intelligence` is never missing here. Built from it
-        // rather than assumed, though: this is the one place besides the runtime mount itself that
-        // needs to reach Intelligence, and it should keep working unmodified if that guarantee ever
-        // loosens and a deployment can legitimately have no reader to build.
-        createThreadReader(
-          createIntelligenceClient(config.runtime.intelligence),
-        ),
+        createThreadReader(createConversationClient(config.runtime)),
       ),
     );
   }

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { IntelligenceAgentRunner } from "@copilotkit/runtime/v2";
+import { MessageSchema, RunAgentInputSchema } from "@ag-ui/core/schemas";
 import { workOwner } from "@openbot/shared/work-owner";
 import { eq } from "drizzle-orm";
+import { z } from "zod";
 import { type AuditStore, handoffInitiator } from "../audit";
 import type { GroupConversations } from "../channels/group";
 import type { ChannelStore } from "../channels/routes";
@@ -120,12 +121,22 @@ export async function startHandoffDelivery(deps: {
       // to its channel by the store; a scratch thread maps to none and signals nowhere.
       setBusy: (input) => channelStore.signalBusy(input.threadId, input.busy),
       newRunId: () => randomUUID(),
-      // The same address and the same token the runtime uses. Assembling either from configuration
-      // produced a runner every join was refused for, because the thread's active run is a lock the
-      // platform issues rather than something an API key can claim.
-      runner: new IntelligenceAgentRunner(
-        copilotRuntime.runnerConnection(),
-      ) as never,
+      runner: {
+        run: (request) =>
+          copilotRuntime.runner.run({
+            threadId: request.threadId,
+            agent: request.agent,
+            input: RunAgentInputSchema.parse(request.input),
+            ...(request.persistedInputMessages
+              ? {
+                  persistedInputMessages: z
+                    .array(MessageSchema)
+                    .parse(request.persistedInputMessages),
+                }
+              : {}),
+          }),
+        stop: (request) => copilotRuntime.runner.stop(request),
+      },
     }),
   });
 
