@@ -37,7 +37,7 @@ pub struct Installed {
 /// A release asset rather than a branch, and https rather than git, so nothing needs a git client
 /// or credentials to get a deployment.
 pub fn tarball_url(version: &str) -> String {
-    format!("https://github.com/CopilotKit/OpenBot/archive/refs/tags/{version}.tar.gz")
+    format!("https://github.com/ocodista/free-bot/archive/refs/tags/{version}.tar.gz")
 }
 
 /// Where the release publishes its image manifest.
@@ -293,7 +293,7 @@ pub fn unpack(root: &Path, body: &[u8]) -> Result<(), String> {
 ///
 /// Parsed here rather than at start-up so a release missing an image fails while the person is
 /// still looking at a screen that says what is being fetched, not later inside Compose's output.
-fn fetch_images(root: &Path, version: &str) -> Result<(), String> {
+pub fn fetch_images(root: &Path, version: &str) -> Result<(), String> {
     let body = get(&images_url(version))
         .map_err(|error| format!("could not fetch the image list for {version}: {error}"))?;
     let manifest: Images = serde_json::from_slice(&body)

@@ -55,6 +55,16 @@ type AlreadyConfigured = {
   autoStart?: boolean;
 };
 
+function configuredLocally(configuration: AlreadyConfigured): boolean {
+  const { values, saved } = configuration;
+  if (values.OPENBOT_RUNTIME) return values.OPENBOT_RUNTIME === "local";
+  return (
+    !values.INTELLIGENCE_API_KEY &&
+    !saved.intelligenceApiKey &&
+    !values.OPENBOT_ORGANIZATION_AUTH_URL
+  );
+}
+
 function installationKeyFor(root: string, harness: HarnessChoice | null) {
   return JSON.stringify([
     root.trim(),
@@ -82,6 +92,7 @@ export function App() {
   const [blockerFailure, setBlockerFailure] = useState<Problem | null>(null);
   const [instruction, setInstruction] = useState("");
   const [root, setRoot] = useState("");
+  const [localRuntime, setLocalRuntime] = useState(true);
   const [reuseIntelligence, setReuseIntelligence] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [organizationAuthorityUrl, setOrganizationAuthorityUrl] = useState<
@@ -290,6 +301,7 @@ export function App() {
     setRecoveryFailure(problem);
     if (problem.connection === "model") setStep("model");
     if (problem.connection === "intelligence") {
+      setLocalRuntime(false);
       setRefreshIntelligence(true);
       setStep("connect");
     }
@@ -326,6 +338,7 @@ export function App() {
   }, [root, model, apiKey, apiUrl, wsUrl, harness, step, reuseIntelligence]);
 
   const clearRootScopedSavedState = useCallback(() => {
+    setLocalRuntime(true);
     void cancelSelfHostedSignIn();
     setIntelligenceSignInKind("managed");
     savedLaunch.current = null;
@@ -353,13 +366,16 @@ export function App() {
         );
         if (configuredRunRef.current !== run) return;
         const { values, saved } = configured;
+        setLocalRuntime(configuredLocally(configured));
         if (values.INTELLIGENCE_API_KEY) setApiKey(values.INTELLIGENCE_API_KEY);
         if (values.INTELLIGENCE_API_URL) setApiUrl(values.INTELLIGENCE_API_URL);
         if (values.INTELLIGENCE_GATEWAY_WS_URL)
           setWsUrl(values.INTELLIGENCE_GATEWAY_WS_URL);
         setAlreadyHeld({ ...values, saved });
         setOrganizationAuthorityUrl(
-          values.OPENBOT_ORGANIZATION_AUTH_URL ?? null,
+          configuredLocally(configured)
+            ? null
+            : (values.OPENBOT_ORGANIZATION_AUTH_URL ?? null),
         );
         return configured;
       } catch {
@@ -462,15 +478,18 @@ export function App() {
           await invoke("start_stack", {
             root: found,
             apiKey: "",
-            apiUrl:
-              configured.values.INTELLIGENCE_API_URL ||
-              MANAGED_INTELLIGENCE_API_URL,
-            gatewayWsUrl:
-              configured.values.INTELLIGENCE_GATEWAY_WS_URL ||
-              MANAGED_INTELLIGENCE_GATEWAY_WS_URL,
+            apiUrl: !configuredLocally(configured)
+              ? configured.values.INTELLIGENCE_API_URL ||
+                MANAGED_INTELLIGENCE_API_URL
+              : "",
+            gatewayWsUrl: !configuredLocally(configured)
+              ? configured.values.INTELLIGENCE_GATEWAY_WS_URL ||
+                MANAGED_INTELLIGENCE_GATEWAY_WS_URL
+              : "",
             model: resumedModel,
             harness: resumedHarness,
-            ...(configured.values.OPENBOT_ORGANIZATION_AUTH_URL
+            ...(!configuredLocally(configured) &&
+            configured.values.OPENBOT_ORGANIZATION_AUTH_URL
               ? {
                   organizationAuthUrl:
                     configured.values.OPENBOT_ORGANIZATION_AUTH_URL,
@@ -525,7 +544,7 @@ export function App() {
         step: "engine",
         ok: true,
         running: true,
-        detail: "Checking the software OpenBot needs.",
+        detail: "Checking the software Free-bot needs.",
       },
     ]);
     setPreparation({ key: installationKey, status: "preparing" });
@@ -554,9 +573,9 @@ export function App() {
     try {
       await invoke("start_stack", {
         root: root.trim(),
-        apiUrl,
-        gatewayWsUrl: wsUrl,
-        apiKey,
+        apiUrl: localRuntime ? "" : apiUrl,
+        gatewayWsUrl: localRuntime ? "" : wsUrl,
+        apiKey: localRuntime ? "" : apiKey,
         // The whole answer from the model screen, so the Rust side decides which keys that
         // implies. Sending a bare key here is what made `ANTHROPIC_API_KEY` and a plan token
         // expressible at the same time.
@@ -564,7 +583,7 @@ export function App() {
         // By id only. The image, the port and how it is dialled are facts about the harness, and
         // the window carrying them would be a second list to keep in step with the catalogue.
         harness,
-        ...(organizationAuthorityUrl !== null
+        ...(!localRuntime && organizationAuthorityUrl !== null
           ? { organizationAuthUrl: organizationAuthorityUrl }
           : {}),
       });
@@ -585,7 +604,7 @@ export function App() {
       /*
        * One screen short of the handover, on purpose.
        *
-       * The window used to become OpenBot here, the moment the stack was up. But up is not the
+       * The window used to become Free-bot here, the moment the stack was up. But up is not the
        * same as working: a refused key or a lapsed plan gives a stack that starts clean and a Bot
        * that cannot answer, and handing over at this point means somebody discovers that inside
        * the product with no idea which of their answers caused it. So the last screen asks a
@@ -673,7 +692,7 @@ export function App() {
   if (blockerFailure) {
     return (
       <main>
-        <h1>OpenBot could not check Windows setup</h1>
+        <h1>Free-bot could not check Windows setup</h1>
         <Failure problem={blockerFailure} />
       </main>
     );
@@ -682,7 +701,7 @@ export function App() {
   if (blocker) {
     return (
       <main>
-        <h1>OpenBot needs one thing first</h1>
+        <h1>Free-bot needs one thing first</h1>
         <div className="blocker">
           <h2>{titleFor(blocker)}</h2>
           <p>{instruction}</p>
@@ -694,7 +713,7 @@ export function App() {
   if (resuming || checkingResume) {
     return (
       <main>
-        <h1>{resuming ? "Starting OpenBot" : "Opening OpenBot"}</h1>
+        <h1>{resuming ? "Starting Free-bot" : "Opening Free-bot"}</h1>
         <p role="status">
           {resuming
             ? "Opening your saved setup…"
@@ -736,7 +755,7 @@ export function App() {
    * Install local software before showing either sign-in. A completed installation is retained
    * while somebody changes or retries their connection; changing its folder or Bot invalidates it.
    *
-   * Skipped entirely when a stack is already up: somebody returning to a running OpenBot is not
+   * Skipped entirely when a stack is already up: somebody returning to a running Free-bot is not
    * setting one up, and asking them to pick a Bot again would be the wizard asking twice.
    */
   if (!running && step === "welcome") {
@@ -786,12 +805,12 @@ export function App() {
         <div className="sheet">
           <p className="steps-of">Step 2 of 4</p>
           <h1>
-            {installationReady ? "Installation complete" : "Install OpenBot"}
+            {installationReady ? "Installation complete" : "Install Free-bot"}
           </h1>
           <p className="lede">
             {installationReady
-              ? "OpenBot’s local software is ready. Next, connect your AI and CopilotKit accounts."
-              : "Install the software OpenBot needs on this computer. This can take a few minutes. You’ll sign in after installation finishes."}
+              ? "Local software is ready. Choose your AI provider, then start your workspace."
+              : "Install the software this workspace needs on this computer. This can take a few minutes."}
           </p>
           {!installationReady && engine?.responding && (
             <p className="footnote">
@@ -800,7 +819,7 @@ export function App() {
             </p>
           )}
           <div className="field">
-            <label htmlFor="root">Where OpenBot lives</label>
+            <label htmlFor="root">Where Free-bot lives</label>
             <input
               id="root"
               disabled={busy}
@@ -845,7 +864,7 @@ export function App() {
                   setStep("model");
                 }}
               >
-                Continue to sign in
+                Continue to AI setup
               </button>
             ) : (
               <button
@@ -857,7 +876,7 @@ export function App() {
                   ? "Installing…"
                   : preparation?.status === "failed"
                     ? "Retry installation"
-                    : "Install OpenBot"}
+                    : "Install Free-bot"}
               </button>
             )}
           </div>
@@ -918,7 +937,7 @@ export function App() {
   if (!running && returningToInstallation && !refreshIntelligence) {
     return (
       <main>
-        <h1>OpenBot is stopped</h1>
+        <h1>Free-bot is stopped</h1>
         <p className="lede">
           Your installation and saved connections are ready to reopen.
         </p>
@@ -929,7 +948,7 @@ export function App() {
           disabled={busy || !installationReady || !modelCanStart()}
           onClick={() => start()}
         >
-          {busy ? "Starting…" : "Start OpenBot"}
+          {busy ? "Starting…" : "Start Free-bot"}
         </button>
         <button
           type="button"
@@ -996,27 +1015,43 @@ export function App() {
         )}
         <h1>
           {running && !displayedFailure
-            ? "OpenBot is running"
+            ? "Free-bot is running"
             : returningToInstallation
               ? "Refresh your CopilotKit connection"
-              : "Connect to CopilotKit"}
+              : localRuntime
+                ? "Start your local workspace"
+                : "Connect to CopilotKit"}
         </h1>
         <p className="lede">
           {running && !displayedFailure
-            ? "The stack is up. OpenBot is in this window; the menu bar has it too, and stops it."
+            ? "The stack is up. Free-bot is in this window; the menu bar has it too, and stops it."
             : returningToInstallation
-              ? "Update this connection to reopen your existing OpenBot."
-              : "Local installation is complete. Connect CopilotKit, then start OpenBot."}
+              ? "Update this connection to reopen your existing Free-bot."
+              : localRuntime
+                ? "Conversations stay on this computer. No Free-bot or CopilotKit account is required."
+                : "Connect your optional CopilotKit Intelligence project."}
         </p>
 
         {!running && (
+          <label className="footnote">
+            <input
+              type="checkbox"
+              checked={!localRuntime}
+              disabled={busy || signingIn}
+              onChange={(event) => setLocalRuntime(!event.target.checked)}
+            />
+            Use CopilotKit Intelligence
+          </label>
+        )}
+
+        {!running && !localRuntime && (
           <fieldset className="connection-form" disabled={busy}>
             {/*
             Sign in on the main path; paste behind the disclosure.
 
             This screen used to ask for a key whose only source was two terminal commands, which is
             the one thing the audience rule forbids. Somebody on managed CopilotKit now signs in and
-            OpenBot creates the key for the project they pick. Somebody running their own
+            Free-bot creates the key for the project they pick. Somebody running their own
             Intelligence has a key this sign-in knows nothing about, so the field moves down there
             with the addresses it belongs with.
           */}
@@ -1067,7 +1102,7 @@ export function App() {
               </>
             ) : projects ? (
               <>
-                <p className="lede">Which project should OpenBot use?</p>
+                <p className="lede">Which project should Free-bot use?</p>
                 <fieldset className="picker">
                   <legend className="sr-only">Project</legend>
                   {projects.map((project) => (
@@ -1136,8 +1171,8 @@ export function App() {
             ) : (
               <>
                 <p className="lede">
-                  OpenBot keeps your conversations in CopilotKit. Sign in and it
-                  sets the rest up for you.
+                  Free-bot keeps your conversations in CopilotKit. Sign in and
+                  it sets the rest up for you.
                 </p>
                 <div className="row connection-actions">
                   <button
@@ -1174,7 +1209,7 @@ export function App() {
               <summary>Point at your own Intelligence server</summary>
               <p className="footnote" style={{ margin: "0.6rem 0 0.75rem" }}>
                 Enter your Intelligence server’s addresses, then sign in to
-                choose a project. OpenBot creates its Learning container for
+                choose a project. Free-bot creates its Learning container for
                 you. Sign-in requires Chrome or Microsoft Edge. You can also use
                 an existing project key.
               </p>
@@ -1237,12 +1272,12 @@ export function App() {
             <details>
               <summary>Sign in through your organization</summary>
               <p className="footnote">
-                Enter your organization’s OpenBot address to use its sign-in and
-                access rules.
+                Enter your organization’s Free-bot address to use its sign-in
+                and access rules.
               </p>
               <div className="field">
                 <label htmlFor="organization-authority">
-                  Organization OpenBot URL
+                  Organization Free-bot URL
                 </label>
                 <input
                   id="organization-authority"
@@ -1301,9 +1336,9 @@ export function App() {
                 /*
                  * The refusal is shown, not swallowed.
                  *
-                 * `show_openbot` answers with "OpenBot is not answering on port 3010 yet, so there
+                 * `show_openbot` answers with "Free-bot is not answering on port 3010 yet, so there
                  * is nothing to show" when the app host process is not up, and this button dropped
-                 * it on the floor. Clicking it then did nothing at all, on a screen headed "OpenBot
+                 * it on the floor. Clicking it then did nothing at all, on a screen headed "Free-bot
                  * is running", which is the worst of both: a true sentence was available and the
                  * window threw it away. The Ask screen's copy of this call always showed it.
                  */
@@ -1313,7 +1348,7 @@ export function App() {
                   )
                 }
               >
-                Show OpenBot
+                Show Free-bot
               </button>
               <button
                 type="button"
@@ -1321,7 +1356,7 @@ export function App() {
                 onClick={stop}
                 disabled={busy}
               >
-                Stop OpenBot
+                Stop Free-bot
               </button>
             </>
           ) : (
@@ -1334,14 +1369,15 @@ export function App() {
                 busy ||
                 signingIn ||
                 !installationReady ||
-                (apiKey.trim() === "" &&
+                (!localRuntime &&
+                  apiKey.trim() === "" &&
                   !alreadyHeld.saved?.intelligenceApiKey &&
                   !reuseIntelligence) ||
                 !modelCanStart() ||
                 root.trim() === ""
               }
             >
-              {busy ? "Working…" : "Start OpenBot"}
+              {busy ? "Working…" : "Start Free-bot"}
             </button>
           )}
         </div>

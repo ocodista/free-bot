@@ -49,6 +49,7 @@ pub struct Ports {
     pub langgraph: u16,
     pub supervisor: u16,
     pub harness: Option<u16>,
+    pub callback: Option<u16>,
 }
 
 impl Default for Ports {
@@ -62,6 +63,7 @@ impl Default for Ports {
             langgraph: 4201,
             supervisor: 4500,
             harness: None,
+            callback: None,
         }
     }
 }
@@ -79,6 +81,7 @@ impl Ports {
                 "LANGGRAPH_PORT",
                 "SUPERVISOR_PORT",
                 "PICKED_HARNESS_HOST_PORT",
+                "FREE_BOT_CALLBACK_PORT",
             ],
         )?;
         let mut ports = Self::default();
@@ -99,7 +102,23 @@ impl Ports {
             .get("PICKED_HARNESS_HOST_PORT")
             .map(|value| parse_port("PICKED_HARNESS_HOST_PORT", value))
             .transpose()?;
+        ports.callback = values
+            .get("FREE_BOT_CALLBACK_PORT")
+            .map(|value| parse_port("FREE_BOT_CALLBACK_PORT", value))
+            .transpose()?;
         Ok(ports)
+    }
+
+    pub fn for_local_runtime(mut self, local: bool) -> Self {
+        self.callback = if local {
+            Some(
+                self.callback
+                    .unwrap_or_else(|| self.server.checked_add(1).unwrap_or(3002)),
+            )
+        } else {
+            None
+        };
+        self
     }
 
     pub fn settings(&self) -> BTreeMap<String, String> {
@@ -118,6 +137,9 @@ impl Ports {
         if let Some(port) = self.harness {
             settings.insert("PICKED_HARNESS_HOST_PORT".into(), port.to_string());
         }
+        if let Some(port) = self.callback {
+            settings.insert("FREE_BOT_CALLBACK_PORT".into(), port.to_string());
+        }
         settings
     }
 
@@ -131,13 +153,16 @@ impl Ports {
     ) -> std::io::Result<Self> {
         let mut held = Vec::new();
         let mut chosen = std::collections::HashSet::new();
-        let mut choose = |preferred, container: bool| -> std::io::Result<u16> {
-            if !chosen.contains(&preferred) {
+        let mut choose = |preferred,
+                          container: bool,
+                          bind: fn(u16) -> std::io::Result<Vec<std::net::TcpListener>>|
+         -> std::io::Result<u16> {
+            if preferred != 0 && !chosen.contains(&preferred) {
                 if container && ours.contains(&preferred) {
                     chosen.insert(preferred);
                     return Ok(preferred);
                 }
-                if let Ok(listeners) = bind_loopbacks(preferred) {
+                if let Ok(listeners) = bind(preferred) {
                     held.extend(listeners);
                     chosen.insert(preferred);
                     return Ok(preferred);
@@ -145,7 +170,7 @@ impl Ports {
             }
             let mut last = None;
             for _ in 0..32 {
-                match bind_loopbacks(0) {
+                match bind(0) {
                     Ok(listeners) => {
                         let port = listeners[0].local_addr()?.port();
                         if chosen.insert(port) {
@@ -161,18 +186,27 @@ impl Ports {
             }))
         };
         Ok(Self {
-            app: choose(self.app, false)?,
-            server: choose(self.server, false)?,
-            postgres: choose(self.postgres, true)?,
-            computer: choose(self.computer, true)?,
-            bot: choose(self.bot, true)?,
-            langgraph: choose(self.langgraph, true)?,
-            supervisor: choose(self.supervisor, true)?,
+            app: choose(self.app, false, bind_loopbacks)?,
+            server: choose(self.server, false, bind_loopbacks)?,
+            postgres: choose(self.postgres, true, bind_loopbacks)?,
+            computer: choose(self.computer, true, bind_loopbacks)?,
+            bot: choose(self.bot, true, bind_loopbacks)?,
+            langgraph: choose(self.langgraph, true, bind_loopbacks)?,
+            supervisor: choose(self.supervisor, true, bind_loopbacks)?,
             harness: harness
-                .map(|default| choose(self.harness.unwrap_or(default), true))
+                .map(|default| choose(self.harness.unwrap_or(default), true, bind_loopbacks))
+                .transpose()?,
+            callback: self
+                .callback
+                .map(|preferred| choose(preferred, false, bind_callback))
                 .transpose()?,
         })
     }
+}
+
+fn bind_callback(port: u16) -> std::io::Result<Vec<std::net::TcpListener>> {
+    std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port))
+        .map(|listener| vec![listener])
 }
 
 fn parse_port(key: &str, value: &str) -> std::io::Result<u16> {
@@ -223,6 +257,7 @@ mod port_tests {
             langgraph: port,
             supervisor: port,
             harness: Some(port),
+            callback: None,
         };
         let chosen = preferred.available(&HashSet::new(), Some(port)).unwrap();
         let values: HashSet<u16> = chosen
@@ -320,6 +355,54 @@ mod port_tests {
         }
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn local_callback_port_is_distinct_bindable_and_persisted() {
+        let foreign = TcpListener::bind("0.0.0.0:0").unwrap();
+        let occupied = foreign.local_addr().unwrap().port();
+        let preferred = Ports {
+            callback: Some(occupied),
+            ..Ports::default()
+        };
+        let chosen = preferred
+            .for_local_runtime(true)
+            .available(&HashSet::new(), Some(4206))
+            .unwrap();
+        let callback = chosen.callback.unwrap();
+        assert_ne!(callback, occupied);
+        let ports: HashSet<u16> = chosen
+            .settings()
+            .values()
+            .map(|value| value.parse().unwrap())
+            .collect();
+        assert_eq!(ports.len(), 9);
+        assert!(bind_callback(callback).is_ok());
+        let root = crate::test_support::temp_root("free-bot-callback-port");
+        std::fs::create_dir_all(&root).unwrap();
+        write(&root.join(".env"), &chosen.settings(), &BTreeMap::new()).unwrap();
+        assert_eq!(Ports::read(&root).unwrap(), chosen);
+        assert_eq!(chosen.for_local_runtime(false).callback, None);
+        assert!(!chosen
+            .for_local_runtime(false)
+            .settings()
+            .contains_key("FREE_BOT_CALLBACK_PORT"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn highest_server_port_still_allocates_a_nonzero_callback() {
+        let chosen = Ports {
+            server: u16::MAX,
+            ..Ports::default()
+        }
+        .for_local_runtime(true)
+        .available(&HashSet::new(), None)
+        .unwrap();
+        assert_ne!(chosen.callback, Some(0));
+        assert_ne!(chosen.callback, Some(chosen.server));
+        assert!(bind_callback(chosen.callback.unwrap()).is_ok());
+        assert_ne!(chosen.settings()["FREE_BOT_CALLBACK_PORT"], "0");
+    }
 }
 
 /**
@@ -360,6 +443,14 @@ pub fn compose(
     kept: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
+    let local_runtime = intelligence.api_url.trim().is_empty()
+        && intelligence.gateway_ws_url.trim().is_empty()
+        && intelligence.api_key.trim().is_empty();
+    let container_callback_port = if local_runtime {
+        ports.callback.unwrap_or(ports.server)
+    } else {
+        ports.server
+    };
 
     /*
      * Only the keys the choice actually implies, and never a blank one: written empty, Compose
@@ -474,7 +565,7 @@ pub fn compose(
                 "OPENAI_CONTAINER_BASE_URL".into(),
                 format!(
                     "http://host.docker.internal:{}/api/model-provider/v1",
-                    ports.server
+                    container_callback_port
                 ),
             );
             env.insert("BOT_PROVIDER".into(), "openai".into());
@@ -542,6 +633,29 @@ pub fn compose(
         "INTELLIGENCE_API_KEY".into(),
         intelligence.api_key.trim().to_string(),
     );
+    env.insert(
+        "OPENBOT_RUNTIME".into(),
+        if local_runtime {
+            "local"
+        } else {
+            "intelligence"
+        }
+        .into(),
+    );
+    if local_runtime {
+        env.insert(
+            "OPENBOT_APP_URL".into(),
+            format!("http://127.0.0.1:{}", ports.app),
+        );
+        env.insert("OPENBOT_ORGANIZATION_AUTH_URL".into(), String::new());
+        env.insert("COPILOTKIT_LICENSE_TOKEN".into(), String::new());
+        env.insert("OPENBOT_LEARNING_AUTO_ASSIGN".into(), "false".into());
+        env.insert(
+            "CPK_INTELLIGENCE_LEARNING_CONTAINER_ID".into(),
+            String::new(),
+        );
+        env.insert("COPILOTKIT_TELEMETRY_DISABLED".into(), "true".into());
+    }
 
     /*
      * MINTED ONCE PER DEPLOYMENT, NOT ONCE PER START.
@@ -698,11 +812,14 @@ pub fn compose(
     );
 
     env.extend(ports.settings());
+    if !local_runtime {
+        env.insert("FREE_BOT_CALLBACK_PORT".into(), String::new());
+    }
     env.insert(
         "OPENBOT_TOOL_URL".into(),
         format!(
             "http://host.docker.internal:{}/api/agent-tools/call",
-            ports.server
+            container_callback_port
         ),
     );
 
@@ -1129,6 +1246,104 @@ mod tests {
             gateway_ws_url: "wss://realtime.example".into(),
             api_key: "key".into(),
         }
+    }
+
+    #[test]
+    fn local_desktop_configuration_needs_no_platform_account() {
+        let ports = Ports::default()
+            .for_local_runtime(true)
+            .available(&std::collections::HashSet::new(), None)
+            .unwrap();
+        let env = compose(
+            &Intelligence {
+                api_url: String::new(),
+                gateway_ws_url: String::new(),
+                api_key: String::new(),
+            },
+            &Model::default(),
+            &engine_status(None),
+            &ports,
+            &pinned(),
+            None,
+            &BTreeMap::new(),
+        );
+        assert_eq!(env["OPENBOT_RUNTIME"], "local");
+        assert_eq!(env["OPENBOT_SINGLE_USER"], "true");
+        assert_eq!(env["INTELLIGENCE_API_KEY"], "");
+        assert_eq!(env["INTELLIGENCE_API_URL"], "");
+        assert_eq!(env["INTELLIGENCE_GATEWAY_WS_URL"], "");
+        assert_eq!(env["OPENBOT_ORGANIZATION_AUTH_URL"], "");
+        assert_eq!(env["OPENBOT_LEARNING_AUTO_ASSIGN"], "false");
+        let callback = ports.callback.unwrap();
+        assert_eq!(env["FREE_BOT_CALLBACK_PORT"], callback.to_string());
+        assert_eq!(
+            env["OPENBOT_TOOL_URL"],
+            format!("http://host.docker.internal:{callback}/api/agent-tools/call")
+        );
+    }
+
+    #[test]
+    fn local_provider_oauth_uses_the_authenticated_container_callback() {
+        let ports = Ports::default()
+            .for_local_runtime(true)
+            .available(&std::collections::HashSet::new(), None)
+            .unwrap();
+        let model = Model {
+            credential: ModelCredential::ProviderOAuth {
+                provider: "google".into(),
+                path: "fixture-oauth.json".into(),
+                proxy_token: "synthetic-proxy-token".into(),
+                model: "synthetic-model".into(),
+            },
+        };
+        let local = compose(
+            &Intelligence {
+                api_url: String::new(),
+                gateway_ws_url: String::new(),
+                api_key: String::new(),
+            },
+            &model,
+            &engine_status(None),
+            &ports,
+            &pinned(),
+            None,
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            local["OPENAI_BASE_URL"],
+            format!("http://127.0.0.1:{}/api/model-provider/v1", ports.server)
+        );
+        assert_eq!(
+            local["OPENAI_CONTAINER_BASE_URL"],
+            format!(
+                "http://host.docker.internal:{}/api/model-provider/v1",
+                ports.callback.unwrap()
+            )
+        );
+        let hosted = compose(
+            &intelligence(),
+            &model,
+            &engine_status(None),
+            &ports.for_local_runtime(false),
+            &pinned(),
+            None,
+            &BTreeMap::new(),
+        );
+        assert_eq!(hosted["FREE_BOT_CALLBACK_PORT"], "");
+        assert_eq!(
+            hosted["OPENAI_CONTAINER_BASE_URL"],
+            format!(
+                "http://host.docker.internal:{}/api/model-provider/v1",
+                ports.server
+            )
+        );
+        assert_eq!(
+            hosted["OPENBOT_TOOL_URL"],
+            format!(
+                "http://host.docker.internal:{}/api/agent-tools/call",
+                ports.server
+            )
+        );
     }
 
     /// A pinned image per Compose variable, as a release manifest supplies.

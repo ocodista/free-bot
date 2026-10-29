@@ -9,6 +9,7 @@ pub mod harness;
 pub mod host_access;
 pub mod install;
 pub mod intelligence;
+pub mod local_deployment;
 pub mod organization_auth;
 pub mod plan;
 pub mod preparation;

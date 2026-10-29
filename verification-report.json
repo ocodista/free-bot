@@ -1,0 +1,104 @@
+{
+  "status": "passed",
+  "source": "CopilotKit/openbot@12c3a69406b2ca32bcb117c0329c9c6d9359565d",
+  "isolation": {
+    "temporaryHome": true,
+    "disposablePostgres": "free-bot-e2e-1793296205801-8cffde20",
+    "model": "local LLMock",
+    "paidApiCalls": false,
+    "inheritedCredentials": false
+  },
+  "checks": [
+    {
+      "command": "bun run test:local",
+      "exitStatus": 0,
+      "passed": 23
+    },
+    {
+      "command": "bun test server/tests/config.test.ts server/tests/copilot.test.ts server/tests/single-user.test.ts server/tests/thread-routes.test.ts server/tests/thread-status.test.ts server/tests/intelligence-authentication.test.ts",
+      "exitStatus": 0,
+      "passed": 233
+    },
+    {
+      "command": "bun test scripts/start-restart-guard.test.ts app/tests/serve.test.ts",
+      "exitStatus": 0,
+      "passed": 69
+    },
+    {
+      "command": "TEST_DATABASE_URL=<disposable fixture> bun test server/tests/tenant-package.test.ts",
+      "exitStatus": 0,
+      "passed": 58
+    },
+    {
+      "command": "bun run --cwd server typecheck",
+      "exitStatus": 0
+    },
+    {
+      "command": "bunx biome check <changed source paths>",
+      "exitStatus": 0
+    },
+    {
+      "command": "docker compose --env-file .env.example config --quiet",
+      "exitStatus": 0
+    },
+    {
+      "command": "bun --no-env-file scripts/free-bot-e2e.ts",
+      "exitStatus": 0,
+      "passedSteps": 15,
+      "browserErrors": [],
+      "report": ".free-bot/verification/1793296727733-1d053b3a/report.json"
+    },
+    {
+      "command": "bun test src/App.test.tsx",
+      "cwd": "desktop",
+      "exitStatus": 0,
+      "passed": 101
+    },
+    {
+      "command": "bun run typecheck",
+      "cwd": "desktop",
+      "exitStatus": 0
+    },
+    {
+      "command": "bun run build",
+      "cwd": "desktop",
+      "exitStatus": 0
+    },
+    {
+      "command": "cargo test --lib env::",
+      "cwd": "desktop/src-tauri",
+      "exitStatus": 0,
+      "passed": 67
+    },
+    {
+      "command": "cargo test --lib local_deployment",
+      "cwd": "desktop/src-tauri",
+      "exitStatus": 0,
+      "passed": 2
+    },
+    {
+      "command": "cargo check --bin openbot-desktop",
+      "cwd": "desktop/src-tauri",
+      "exitStatus": 0
+    }
+  ],
+  "independentReview": {
+    "core": "passed after blocker fixes",
+    "desktop": "passed after blocker fixes",
+    "blockingFindings": []
+  },
+  "limits": [
+    "single user and process",
+    "crash-held lease may last 120 seconds",
+    "long-history performance unbenchmarked",
+    "no signed desktop release published",
+    "full native app launch unverified"
+  ],
+  "containerCallbacks": {
+    "evidence": ".free-bot/verification/1793296727733-1d053b3a/callback-network.json",
+    "host": "host.docker.internal",
+    "actualContainerRequest": true,
+    "invalidCredentialsRefused": true,
+    "adminAndBrowserRequestsRefused": true
+  }
+}

@@ -764,6 +764,16 @@ async fn deployment_ready<R: tauri::Runtime>(
     let target = root.to_path_buf();
     let handle = app.clone();
     let version = tauri::async_runtime::spawn_blocking(move || {
+        if let Some(source) = openbot_desktop_lib::local_deployment::source_root() {
+            openbot_desktop_lib::local_deployment::copy_source(&source, &target)?;
+            let upstream_version = format!("v{}", env!("CARGO_PKG_VERSION"));
+            if !deployment::images_path(&target).is_file() {
+                deployment::fetch_images(&target, &upstream_version)?;
+            }
+            let version = format!("free-bot-local-{}", env!("CARGO_PKG_VERSION"));
+            deployment::record(&target, &version).map_err(|error| error.to_string())?;
+            return Ok::<_, String>(version);
+        }
         let version = deployment_release::resolve_version(&target)?;
         if deployment::needs_fetch(&target, &version) {
             report_running(
@@ -1283,6 +1293,8 @@ async fn start_stack_inner<R: tauri::Runtime>(
     harness: Option<harness::HarnessChoice>,
     organization_auth_url: Option<String>,
 ) -> Result<(), Problem> {
+    let local_runtime =
+        api_url.trim().is_empty() && gateway_ws_url.trim().is_empty() && api_key.trim().is_empty();
     let organization_auth_url = organization_auth_url.map(|url| url.trim().to_string());
     if let Some(url) = organization_auth_url.as_ref().filter(|url| !url.is_empty()) {
         if !reqwest::Url::parse(url).is_ok_and(|url| {
@@ -1411,7 +1423,11 @@ async fn start_stack_inner<R: tauri::Runtime>(
             return Err(problem.into());
         }
 
-        let api_key = intelligence_key_for_start(&root, api_key, saved_secret)?;
+        let api_key = if local_runtime {
+            String::new()
+        } else {
+            intelligence_key_for_start(&root, api_key, saved_secret)?
+        };
         let existing_secrets = openbot_desktop_lib::vault::already_given_no_ui(
             &root,
             &root.join(".env"),
@@ -1448,6 +1464,7 @@ async fn start_stack_inner<R: tauri::Runtime>(
         }
         let ours = stack::ports_we_already_publish(&found, &root);
         let ports = previous_ports
+            .for_local_runtime(local_runtime)
             .available(
                 &ours,
                 picked.as_ref().and_then(|picked| picked.installed_port()),
@@ -1476,14 +1493,16 @@ async fn start_stack_inner<R: tauri::Runtime>(
             // new KEY_ENCRYPTION_KEY and orphans everything the server had encrypted under the old one.
             &existing_secrets,
         );
-        if let Some(authority) = organization_auth_url {
+        if let Some(authority) = organization_auth_url.filter(|_| !local_runtime) {
             settings.insert("OPENBOT_ORGANIZATION_AUTH_URL".into(), authority);
         }
-        seed_learning_default(
-            &root,
-            &mut settings,
-            shell.intelligence_learning.lock().unwrap().as_ref(),
-        )?;
+        if !local_runtime {
+            seed_learning_default(
+                &root,
+                &mut settings,
+                shell.intelligence_learning.lock().unwrap().as_ref(),
+            )?;
+        }
         /*
          * The credentials come out here and never reach the file.
          *

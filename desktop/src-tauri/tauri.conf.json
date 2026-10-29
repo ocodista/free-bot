@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OpenBot",
+  "productName": "Free-bot",
   "version": "../../package.json",
-  "identifier": "ai.copilotkit.openbot.desktop",
+  "identifier": "dev.ocodista.freebot.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:3020",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "OpenBot",
+        "title": "Free-bot",
         "width": 900,
         "height": 640,
         "minWidth": 720,
@@ -48,7 +48,7 @@
     ],
     "copyright": "CopilotKit",
     "category": "DeveloperTool",
-    "shortDescription": "Run OpenBot on your own machine",
-    "longDescription": "OpenBot Desktop installs the container engine, raises the stack, and keeps it running."
+    "shortDescription": "Run Free-bot on your own machine",
+    "longDescription": "Free-bot runs a local AI workspace without an OpenBot or CopilotKit account."
   }
 }

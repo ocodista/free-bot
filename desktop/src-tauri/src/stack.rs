@@ -2980,7 +2980,7 @@ const APP_SCRIPT: &str = "serve";
 
 /// Where the shell keeps the deployment it manages.
 pub fn default_root() -> PathBuf {
-    dirs_home().join("OpenBot")
+    dirs_home().join("FreeBot")
 }
 
 /// The deployment directory somebody typed, as a path.
